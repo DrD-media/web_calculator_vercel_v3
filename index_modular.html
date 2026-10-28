@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Калькулятор системной динамики: Оценка качества ПО по ISO (U5 — Сопровождаемость)</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Chart.js local bundle with CDN fallback -->
+  <script src="chart.umd.min.js"></script>
+  <script>
+    if (typeof Chart === 'undefined') {
+      const cdnScript = document.createElement('script');
+      cdnScript.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js';
+      document.head.appendChild(cdnScript);
+    }
+  </script>
+</head>
+<body>
+  <div class="app-container">
+    <div id="runtimeErrorBanner" style="display:none; background:#fef2f2; color:#b91c1c; border:2px solid #ef4444; padding:16px; margin:16px; border-radius:8px; font-family:monospace; white-space:pre-wrap; z-index:9999;"></div>
+    <!-- Шапка приложения -->
+    <header class="app-header">
+      <div class="header-content">
+        <h1>Калькулятор системной динамики: Оценка качества ПО по ISO 9126 / 25010</h1>
+        <p class="subtitle">Моделирование поддерева U5 «Сопровождаемость» (28 характеристик, 187 функций связи, 6 внешних возмущений)</p>
+      </div>
+      <div class="header-status">
+        <span class="status-badge" id="simStatusBadge">Модель готова к расчету</span>
+      </div>
+    </header>
+
+    <!-- Навигация по вкладкам -->
+    <nav class="app-tabs">
+      <button class="tab-btn active" data-tab="tab-params">1. Параметры и начальные условия</button>
+      <button class="tab-btn" data-tab="tab-pert">2. График возмущений (λ₁..λ₆)</button>
+      <button class="tab-btn" data-tab="tab-dynamics">3. Динамика характеристик системы</button>
+      <button class="tab-btn" data-tab="tab-radar">4. Лепестковая диаграмма</button>
+      <button class="tab-btn" data-tab="tab-export">5. Таблица соответствия и экспорт</button>
+    </nav>
+
+    <!-- Содержимое вкладок -->
+    <main class="tab-content-container">
+
+      <!-- ВКЛАДКА 1: Параметры и начальные условия -->
+      <section id="tab-params" class="tab-pane active">
+        <div class="grid-2col">
+          <!-- Левая колонка: Начальные условия u_i(0) и нормативные пределы u_lim -->
+          <div class="card">
+            <div class="card-header">
+              <h2>Начальные условия uᵢ(0) и пределы допуска uᵢ^lim</h2>
+              <div class="card-actions">
+                <button class="btn btn-sm btn-secondary" id="btnRandU0">Случайные uᵢ(0)</button>
+                <button class="btn btn-sm btn-secondary" id="btnResetU0">Сброс uᵢ(0)</button>
+                <button class="btn btn-sm btn-secondary" id="btnHalfU0">0.50 для всех</button>
+              </div>
+            </div>
+            <p class="section-desc">Характеристики приведены к строгому последовательному ряду u₁..u₂₈ с контролем нормативных пределов.</p>
+            
+            <!-- Панель пакетного задания пределов -->
+            <div class="limits-batch-bar">
+              <span class="limits-bar-title">Нормативные пределы (допуски):</span>
+              <div class="limits-inputs-wrap">
+                <label>Качество (u₁..u₆) ≥ <input type="number" id="batchLimitQuality" min="0" max="1" step="0.05" value="0.75" class="limit-input-num"></label>
+                <label>Дефекты (u₇..u₂₈) ≤ <input type="number" id="batchLimitDefects" min="0" max="1" step="0.05" value="0.25" class="limit-input-num"></label>
+                <button class="btn btn-xs btn-primary" id="btnApplyBatchLimits">Задать пределы для всех</button>
+                <button class="btn btn-xs btn-secondary" id="btnPresetStep25">Шаг 0.25 (0.75 / 0.25)</button>
+              </div>
+            </div>
+
+            <div class="table-container u0-table-scroll">
+              <table class="data-table" id="tableU0">
+                <thead>
+                  <tr>
+                    <th>Индекс</th>
+                    <th>ISO</th>
+                    <th>Характеристика качества</th>
+                    <th>Требование допуска</th>
+                    <th>uᵢ(0)</th>
+                    <th>Предел uᵢ^lim</th>
+                  </tr>
+                </thead>
+                <tbody id="tbodyU0">
+                  <!-- Заполняется динамически JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Правая колонка: Уравнения функций связи F_k(x) и блок Управление -->
+          <div class="card">
+            <div class="card-header">
+              <h2>Уравнения функций связи Fₖ(x) [всего 187]</h2>
+              <div class="card-actions">
+                <button class="btn btn-sm btn-primary" id="btnRandFuncs">Случайные коэффициенты</button>
+                <button class="btn btn-sm btn-secondary" id="btnResetFuncs">Сброс к исходным</button>
+              </div>
+            </div>
+            <p class="section-desc">
+              Все 187 уравнений полиномиальных функций взаимодействия в классической математической форме F(x). Коэффициенты доступны для прямого ввода в строках.
+            </p>
+
+            <!-- Панель быстрых пресетов и поиска -->
+            <div class="eq-top-toolbar">
+              <div class="eq-quick-btns">
+                <button class="btn btn-xs btn-secondary" id="btnSetAllDeg1">Все лин. (степень 1)</button>
+                <button class="btn btn-xs btn-secondary" id="btnSetAllDeg2">Все кв. (степень 2)</button>
+                <button class="btn btn-xs btn-secondary" id="btnSetAllDeg3">Все куб. (степень 3)</button>
+              </div>
+              <div class="eq-search-box">
+                <label for="searchEqInput">Поиск:</label>
+                <input type="text" id="searchEqInput" placeholder="Номер F или u..." class="form-input" style="width: 120px; padding: 2px 6px; font-size: 11px;">
+                <label for="quickJumpFunc">Перейти:</label>
+                <select id="quickJumpFunc" class="form-select" style="width: 80px; padding: 2px 4px; font-size: 11px;"></select>
+              </div>
+            </div>
+
+            <!-- Список всех 187 уравнений со скроллом -->
+            <div class="equations-scroll-container" id="equationsList">
+              <!-- Заполняется динамически JS всеми 187 строками -->
+            </div>
+
+            <!-- Блок Управление (соответствует стилю примера преподавателя) -->
+            <div class="management-card">
+              <div class="mgmt-header">Управление</div>
+              <div class="mgmt-status-row">
+                <span style="font-weight: 600; color: #475569; font-size: 13px;">Статус:</span>
+                <span class="status-badge" id="simStatusBadgeMgmt">Готово к расчету</span>
+              </div>
+              <div class="mgmt-buttons-grid">
+                <button class="btn btn-success btn-lg" id="btnRunSim">Вычислить</button>
+                <button class="btn btn-secondary btn-nav-tab" data-nav="tab-dynamics">График динамики</button>
+                <button class="btn btn-secondary btn-nav-tab" data-nav="tab-radar">Лепестковая диаграмма</button>
+                <button class="btn btn-secondary btn-nav-tab" data-nav="tab-pert">Возмущения</button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- ВКЛАДКА 2: График возмущений -->
+      <section id="tab-pert" class="tab-pane">
+        <div class="chart-layout-with-sidebar">
+          <div class="chart-main-card">
+            <div class="card-header">
+              <h2>График изменения функций внешних возмущений λ₁(t)..λ₆(t)</h2>
+              <div class="card-actions">
+                <button class="btn btn-sm btn-secondary" onclick="exportChartPNG('pertChart', 'График_возмущений_lambda.png')">Экспорт графика PNG</button>
+              </div>
+            </div>
+            <p class="chart-subtext">Линии обозначены символом λ (символ f зарезервирован для внутренних функций связи), все кривые подписаны непосредственно на графике.</p>
+            <div class="canvas-wrapper">
+              <canvas id="pertChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Боковая панель фильтрации возмущений -->
+          <div class="sidebar-ctrl-card">
+            <h3>Фильтрация возмущений</h3>
+            <p class="sidebar-desc">Отображение произвольного набора внешних факторов:</p>
+            <div class="quick-filter-btns">
+              <button class="btn btn-xs btn-secondary" id="btnPertSelectAll">Выбрать все</button>
+              <button class="btn btn-xs btn-secondary" id="btnPertDeselectAll">Снять все</button>
+            </div>
+            <div class="checkbox-scroll-list" id="pertCheckboxList">
+              <!-- Заполняется JS -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ВКЛАДКА 3: Динамика характеристик системы -->
+      <section id="tab-dynamics" class="tab-pane">
+        <div class="chart-layout-with-sidebar">
+          <div class="chart-main-card">
+            <div class="card-header">
+              <h2 id="dynChartTitle">Динамика характеристик системы во времени</h2>
+              <div class="card-actions">
+                <button class="btn btn-sm btn-secondary" onclick="exportChartPNG('dynChart', 'Динамика_характеристик.png')">Экспорт графика PNG</button>
+              </div>
+            </div>
+
+            <!-- Переключатель режима: Одиночный vs Множественный -->
+            <div class="mode-switch-bar">
+              <span class="mode-label">Режим отображения:</span>
+              <label class="mode-radio">
+                <input type="radio" name="dynMode" value="single" id="dynModeSingle">
+                Одиночный анализ (изолированное отображение)
+              </label>
+              <label class="mode-radio">
+                <input type="radio" name="dynMode" value="multi" id="dynModeMulti" checked>
+                Множественный выбор (сравнение характеристик)
+              </label>
+            </div>
+
+            <div class="canvas-wrapper">
+              <canvas id="dynChart"></canvas>
+            </div>
+
+            <!-- Аналитическая карточка (только в одиночном режиме) -->
+            <div id="singleCardBox" class="single-analysis-card" style="display: none;">
+              <div class="card-metric-header" id="singleCardTitle">u₁ (U5): Сопровождаемость</div>
+              <div class="metrics-grid">
+                <div class="metric-cell">
+                  <span class="m-label">Начало u(0):</span>
+                  <span class="m-val" id="valStart">-</span>
+                </div>
+                <div class="metric-cell">
+                  <span class="m-label">Финал u(1):</span>
+                  <span class="m-val" id="valEnd">-</span>
+                </div>
+                <div class="metric-cell">
+                  <span class="m-label">Изменение Δu:</span>
+                  <span class="m-val" id="valDelta">-</span>
+                </div>
+                <div class="metric-cell">
+                  <span class="m-label">Динамика (%):</span>
+                  <span class="m-val" id="valPct">-</span>
+                </div>
+              </div>
+              <div class="conclusion-text" id="singleVerdictText">Текстовый вывод анализа...</div>
+            </div>
+          </div>
+
+          <!-- Боковая панель управления характеристиками -->
+          <div class="sidebar-ctrl-card">
+            <div id="sidebarSingleControls" style="display: none;">
+              <h3>Выбор характеристики</h3>
+              <p class="sidebar-desc">Изолированный анализ единичной характеристики:</p>
+              <div class="nav-control-row">
+                <button class="btn btn-sm btn-secondary" id="btnPrevChar" title="Предыдущая">← Пред.</button>
+                <select id="selectSingleChar" class="form-select"></select>
+                <button class="btn btn-sm btn-secondary" id="btnNextChar" title="Следующая">След. →</button>
+              </div>
+            </div>
+
+            <div id="sidebarMultiControls">
+              <h3>Выбор показателей для графика</h3>
+              <div class="quick-filter-btns">
+                <button class="btn btn-xs btn-secondary" id="btnFilterQuality">Только качество (u₁..u₆)</button>
+                <button class="btn btn-xs btn-secondary" id="btnFilterDefects">Только дефекты (u₇..u₂₈)</button>
+              </div>
+              <div class="quick-filter-btns" style="margin-top: 4px;">
+                <button class="btn btn-xs btn-secondary" id="btnFilterAll">Все 28 характеристик</button>
+                <button class="btn btn-xs btn-secondary" id="btnFilterNone">Снять все</button>
+              </div>
+              <div class="checkbox-scroll-list" id="dynCheckboxList">
+                <!-- Заполняется динамически JS -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ВКЛАДКА 4: Лепестковая (радарная) диаграмма -->
+      <section id="tab-radar" class="tab-pane">
+        <div class="chart-layout-with-sidebar">
+          <div class="chart-main-card">
+            <div class="card-header">
+              <h2 id="radarChartTitle">Лепестковая диаграмма состояния характеристик системы</h2>
+              <div class="card-actions">
+                <button class="btn btn-sm btn-secondary" onclick="exportChartPNG('radarChart', 'Лепестковая_диаграмма_качества.png')">Экспорт графика PNG</button>
+              </div>
+            </div>
+
+            <!-- Информационный баннер правил и допуска с шагом 0.25 -->
+            <div class="radar-rules-banner">
+              <div class="rule-item">
+                <span style="color: #dc2626; font-size: 14px;">🔴</span>
+                <span><strong>Красная линия — нормативный предел (шаг радиальной шкалы 0.25):</strong></span>
+              </div>
+              <div class="rule-item" style="padding-left: 18px;">
+                <span>• <strong>Критерии качества (u₁..u₆)</strong>: фактические значения должны быть <strong>больше либо равны пределу</strong> (снаружи или на красной линии: uᵢ ≥ u_lim).</span>
+              </div>
+              <div class="rule-item" style="padding-left: 18px;">
+                <span>• <strong>Факторы дефектов (u₇..u₂₈)</strong>: фактические значения должны быть <strong>меньше либо равны пределу</strong> (внутри или на красной линии: uᵢ ≤ u_lim).</span>
+              </div>
+            </div>
+
+            <div class="canvas-wrapper radar-canvas-wrapper">
+              <canvas id="radarChart"></canvas>
+            </div>
+          </div>
+
+          <!-- Боковая панель настройки среза -->
+          <div class="sidebar-ctrl-card">
+            <h3>Временной срез</h3>
+            <div class="radar-time-group" id="radarTimeRadios">
+              <label><input type="radio" name="radarTime" value="t0" checked> Начальный момент (t = 0.00)</label>
+              <label><input type="radio" name="radarTime" value="t1"> 1-я четверть (t = 0.25)</label>
+              <label><input type="radio" name="radarTime" value="t2"> 2-я четверть (t = 0.50)</label>
+              <label><input type="radio" name="radarTime" value="t3"> 3-я четверть (t = 0.75)</label>
+              <label><input type="radio" name="radarTime" value="t4"> Конечный момент (t = 1.00)</label>
+              <label><input type="radio" name="radarTime" value="all"> Все 5 срезов одновременно</label>
+            </div>
+
+            <h3 style="margin-top: 18px;">Набор осей диаграммы</h3>
+            <div class="radar-time-group">
+              <label><input type="radio" name="radarScope" value="all28" checked> Все 28 характеристик</label>
+              <label><input type="radio" name="radarScope" value="top6"> Только верхний уровень (u₁..u₆)</label>
+            </div>
+
+            <h3 style="margin-top: 18px;">Линия допуска</h3>
+            <div class="radar-time-group">
+              <label><input type="checkbox" id="cbShowRadarLimit" checked> Показывать красную линию предела</label>
+            </div>
+
+            <!-- Карточка соответствия нормам -->
+            <div class="compliance-status-card" id="radarComplianceBox">
+              <div class="compliance-header">Контроль соответствия нормам:</div>
+              <div id="complianceDetailText">Выполняется оценка среза...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ВКЛАДКА 5: Таблица соответствия и экспорт -->
+      <section id="tab-export" class="tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <h2>Таблица соответствия переменных модели и экспорт данных</h2>
+            <div class="card-actions">
+              <button class="btn btn-primary" id="btnDownloadCSV">Скачать результаты в CSV (Excel)</button>
+            </div>
+          </div>
+          <p class="section-desc">
+            Полный перечень характеристик качества и первичных метрик дефектов согласно дереву стандартов ISO 9126 / ISO 25010 для поддерева U5 «Сопровождаемость».
+          </p>
+
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Индекс в модели</th>
+                  <th>Вершина в графе ISO</th>
+                  <th>Наименование характеристики</th>
+                  <th>Уровень и роль в структуре</th>
+                </tr>
+              </thead>
+              <tbody id="tbodyCorrespondence">
+                <!-- Заполняется JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Подвал -->
+    <footer class="app-footer">
+      <div>Дисциплина: <b>Теория информационных процессов и систем</b> • Практическая работа: <i>Модели и методы проверки выполнимости плана операций</i></div>
+      <div>Реализация математической модели: система 28 ОДУ Рунге-Кутта 4-го порядка • Стандарт ISO 9126 / 25010</div>
+    </footer>
+  </div>
+
+  <!-- Модальное окно подтверждения перезаписи коэффициентов -->
+  <div id="randomizeModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 id="modalTitle">Заполнение коэффициентов</h3>
+        <button type="button" class="modal-close-btn" id="modalCloseBtn">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <!-- Текст формируется динамически -->
+      </div>
+      <div class="modal-actions" id="modalActions">
+        <!-- Кнопки формируются динамически -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно подробных результатов расчета модели -->
+  <div id="simResultModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-dialog modal-dialog-lg">
+      <div class="modal-header">
+        <h3>📊 Результаты моделирования системной динамики</h3>
+        <button type="button" class="modal-close-btn" id="simResultCloseBtn">&times;</button>
+      </div>
+      <div class="modal-body" id="simResultModalBody">
+        <!-- Заполняется динамически через JS -->
+      </div>
+      <div class="modal-actions" style="flex-direction: row; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" class="btn btn-outline" id="btnResNavDyn">📈 График динамики</button>
+          <button type="button" class="btn btn-outline" id="btnResNavRadar">🕸️ Лепестковая диаграмма</button>
+          <button type="button" class="btn btn-outline" id="btnResNavPert">📊 Возмущения λ(t)</button>
+        </div>
+        <button type="button" class="btn btn-primary" id="btnResClose">Понятно, закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Контейнер для всплывающих уведомлений -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Подключение скриптов логики -->
+  <script src="model_data.js"></script>
+  <script src="simulation.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
