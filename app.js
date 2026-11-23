@@ -2,11 +2,23 @@
  * Управление интерфейсом и визуализацией веб-калькулятора системной динамики
  */
 
+const subMap = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉' };
+function toSubscript(num) {
+  return String(num).split('').map(d => subMap[d] !== undefined ? subMap[d] : d).join('');
+}
+
 let model = new SimulationModel();
 let currentResults = null;
 let pertChartInstance = null;
 let dynChartInstance = null;
 let radarChartInstance = null;
+const radarGridInstances = {
+  t0: null,
+  t1: null,
+  t2: null,
+  t3: null,
+  t4: null
+};
 
 // Цветовые палитры
 const PALETTE_28 = [
@@ -29,6 +41,7 @@ function startApp() {
     }
     setupTabs();
     initTableU0();
+    initPerturbationEquationsList();
     initEquationsList();
     initPerturbationControls();
     initDynamicsControls();
@@ -67,7 +80,10 @@ function openTab(targetId) {
   });
   if (targetId === "tab-pert" && pertChartInstance) pertChartInstance.resize();
   if (targetId === "tab-dynamics" && dynChartInstance) dynChartInstance.resize();
-  if (targetId === "tab-radar" && radarChartInstance) radarChartInstance.resize();
+  if (targetId === "tab-radar") {
+    if (radarChartInstance) radarChartInstance.resize();
+    Object.values(radarGridInstances).forEach(inst => { if (inst) inst.resize(); });
+  }
 }
 
 function setupTabs() {
@@ -99,7 +115,7 @@ function initTableU0() {
     if (ch.is_quality) tr.classList.add("row-quality");
 
     const roleDesc = ch.is_quality ? "Критерий качества" : "Фактор дефекта";
-    const defLimit = ch.is_quality ? 0.75 : 0.25;
+    const defLimit = ch.default_limit !== undefined ? ch.default_limit : (ch.is_quality ? 0.75 : 0.25);
     const limitReq = ch.is_quality ? `≥ ${defLimit.toFixed(2)}` : `≤ ${defLimit.toFixed(2)}`;
 
     tr.innerHTML = `
@@ -170,6 +186,43 @@ function initTableU0() {
     });
     if (radarChartInstance) renderRadarChart();
   });
+
+  // Сброс к индивидуальным отраслевым нормам стандарта ISO
+  const btnResetInd = document.getElementById("btnResetIndividualLimits");
+  if (btnResetInd) {
+    btnResetInd.addEventListener("click", () => {
+      CHARACTERISTICS.forEach((ch, idx) => {
+        const inp = document.getElementById(`ulim_input_${idx}`);
+        if (inp) {
+          const dLim = ch.default_limit !== undefined ? ch.default_limit : (ch.is_quality ? 0.75 : 0.25);
+          inp.value = dLim.toFixed(2);
+        }
+      });
+      if (radarChartInstance) renderRadarChart();
+      showToast("Нормативные пределы сброшены к дифференцированным отраслевым нормам ISO!", "info");
+    });
+  }
+
+  // Генерация случайных дифференцированных пределов
+  const btnRandLim = document.getElementById("btnRandLimits");
+  if (btnRandLim) {
+    btnRandLim.addEventListener("click", () => {
+      CHARACTERISTICS.forEach((ch, idx) => {
+        const inp = document.getElementById(`ulim_input_${idx}`);
+        if (inp) {
+          let val = 0.25;
+          if (ch.is_quality) {
+            val = 0.60 + Math.floor(Math.random() * 6) * 0.05;
+          } else {
+            val = 0.10 + Math.floor(Math.random() * 7) * 0.05;
+          }
+          inp.value = val.toFixed(2);
+        }
+      });
+      if (radarChartInstance) renderRadarChart();
+      showToast("Установлены случайные дифференцированные пределы для всех характеристик!", "success");
+    });
+  }
 
   document.getElementById("btnRunSim").addEventListener("click", () => runSimulation(true));
 }
@@ -283,7 +336,8 @@ function openSimResultModal(u0, results) {
   for (let i = 0; i < 28; i++) {
     const ch = CHARACTERISTICS[i];
     const v1 = results.u[i][100];
-    const lim = parseFloat(document.getElementById(`ulim_input_${i}`)?.value) || (ch.is_quality ? 0.75 : 0.25);
+    const defLim = ch.default_limit !== undefined ? ch.default_limit : (ch.is_quality ? 0.75 : 0.25);
+    const lim = parseFloat(document.getElementById(`ulim_input_${i}`)?.value) || defLim;
     if (ch.is_quality) {
       qualTotal++;
       if (v1 >= lim) qualPass++;
@@ -293,7 +347,7 @@ function openSimResultModal(u0, results) {
     }
   }
 
-  // Сводка по 6 характеристикам качества верхнего уровня (u1..u6)
+  // Сводка по 6 характеристикам качества верхнего уровня (u₁..u₆)
   let tableRows = "";
   for (let i = 0; i < 6; i++) {
     const ch = CHARACTERISTICS[i];
@@ -301,7 +355,8 @@ function openSimResultModal(u0, results) {
     const v1 = results.u[i][100];
     const d = v1 - v0;
     const dStr = (d >= 0 ? "+" : "") + d.toFixed(2);
-    const lim = parseFloat(document.getElementById(`ulim_input_${i}`)?.value) || 0.75;
+    const defLim = ch.default_limit !== undefined ? ch.default_limit : 0.75;
+    const lim = parseFloat(document.getElementById(`ulim_input_${i}`)?.value) || defLim;
     const isOk = v1 >= lim;
     const statusBadge = isOk
       ? `<span class="badge-qual" style="background:#dcfce7; color:#166534; font-size:11px;">✓ Норма (≥ ${lim.toFixed(2)})</span>`
@@ -324,7 +379,7 @@ function openSimResultModal(u0, results) {
     <!-- Карточка целевого показателя -->
     <div class="res-kpi-card">
       <div class="res-kpi-header">
-        <span>Целевой показатель модели: u₁ — Сопровождаемость (вершина U5)</span>
+        <span>Целевой показатель модели: u₁ — Сопровождаемость (вершина U₅)</span>
         <span style="font-size: 11px; font-weight: 500; color: #64748b;">Метод: RK4 (Рунге-Кутта 4-го порядка, N=100)</span>
       </div>
       <div class="res-metrics-grid">
@@ -354,11 +409,11 @@ function openSimResultModal(u0, results) {
     <div class="res-compliance-summary">
       <div class="res-comp-pill quality">
         <div style="font-weight:700; margin-bottom:2px;">Критерии качества (u₁..u₆)</div>
-        <div>Соответствуют допуску: <strong>${qualPass} из ${qualTotal}</strong> (условие uᵢ ≥ u_lim)</div>
+        <div>Соответствуют допуску: <strong>${qualPass} из ${qualTotal}</strong> (условие uᵢ ≥ uᵢ,lim)</div>
       </div>
       <div class="res-comp-pill defects">
         <div style="font-weight:700; margin-bottom:2px;">Факторы дефектов (u₇..u₂₈)</div>
-        <div>В пределах нормы: <strong>${defPass} из ${defTotal}</strong> (условие uᵢ ≤ u_lim)</div>
+        <div>В пределах нормы: <strong>${defPass} из ${defTotal}</strong> (условие uᵢ ≤ uᵢ,lim)</div>
       </div>
     </div>
 
@@ -461,6 +516,237 @@ function showToast(message, type = "info", duration = 3500) {
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// РЕДАКТИРОВАНИЕ 6 ФУНКЦИЙ ВНЕШНИХ ВОЗМУЩЕНИЙ f1(t)..f6(t)
+// ----------------------------------------------------------------------------
+function initPerturbationEquationsList() {
+  const container = document.getElementById("pertEquationsList");
+  if (!container || !model || !model.perturbationParams) return;
+  container.innerHTML = "";
+
+  const baseSpecs = [
+    { title: "Опыт разработчиков", term: "· t² +" },
+    { title: "Опыт персонала", term: "· cos²(1.5πt − π/6) +" },
+    { title: "Трудоемкость", term: "· sin(πt − π/6) +" },
+    { title: "Курс рубля к доллару", term: "· t +" },
+    { title: "Репутация разработчиков", term: "· sin²(πt − π/6) +" },
+    { title: "Репутация экспл. орг.", term: "· cos²(πt) +" }
+  ];
+
+  model.perturbationParams.forEach((p, idx) => {
+    const row = document.createElement("div");
+    row.className = "eq-row pert-row";
+    row.id = `pert_row_${idx}`;
+
+    const isBase = (p.type === "base");
+
+    row.innerHTML = `
+      <div class="eq-row-top">
+        <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+          <span class="eq-f-label" style="color: ${PERT_COLORS[idx] || '#1e3a8a'}; font-size: 13.5px;">${p.symbol}(t)</span>
+          <span class="eq-arg-desc">(${p.title})</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+          <label style="font-size: 11px; color: #475569;">Режим:</label>
+          <select class="eq-deg-select" id="pert_mode_select_${idx}">
+            <option value="base" ${isBase ? 'selected' : ''}>Базовая формула</option>
+            <option value="poly" ${!isBase ? 'selected' : ''}>Полином</option>
+          </select>
+          <span id="pert_deg_wrap_${idx}" style="display: ${isBase ? 'none' : 'inline-flex'}; align-items: center; gap: 4px;">
+            <label style="font-size: 11px; color: #475569;">Степень:</label>
+            <select class="eq-deg-select" id="pert_deg_select_${idx}">
+              <option value="1" ${p.degree === 1 ? 'selected' : ''}>1: лин</option>
+              <option value="2" ${p.degree === 2 ? 'selected' : ''}>2: кв</option>
+              <option value="3" ${p.degree === 3 ? 'selected' : ''}>3: куб</option>
+            </select>
+          </span>
+        </div>
+      </div>
+      <div class="eq-row-body" id="pert_body_${idx}">
+      </div>
+    `;
+
+    container.appendChild(row);
+
+    const modeSelect = row.querySelector(`#pert_mode_select_${idx}`);
+    const onModeChange = (e) => {
+      p.type = e.target.value;
+      const degWrap = document.getElementById(`pert_deg_wrap_${idx}`);
+      if (degWrap) degWrap.style.display = (p.type === "poly") ? "inline-flex" : "none";
+      updatePertRowBody(idx);
+    };
+    modeSelect.addEventListener("change", onModeChange);
+    modeSelect.addEventListener("input", onModeChange);
+
+    const degSelect = row.querySelector(`#pert_deg_select_${idx}`);
+    const onDegChange = (e) => {
+      p.degree = parseInt(e.target.value) || 3;
+      updatePertRowBody(idx);
+    };
+    degSelect.addEventListener("change", onDegChange);
+    degSelect.addEventListener("input", onDegChange);
+
+    updatePertRowBody(idx);
+  });
+
+  // Кнопки на вкладке 1
+  const btnRandPerts = document.getElementById("btnRandPerts");
+  if (btnRandPerts) {
+    btnRandPerts.addEventListener("click", () => {
+      model.randomizePerturbations();
+      updateAllPerturbationRows();
+      showToast("Коэффициенты функций возмущений f₁(t)..f₆(t) заполнены случайными значениями!", "success");
+    });
+  }
+
+  const btnResetPerts = document.getElementById("btnResetPerts");
+  if (btnResetPerts) {
+    btnResetPerts.addEventListener("click", () => {
+      model.initDefaultPerturbations();
+      updateAllPerturbationRows();
+      showToast("Коэффициенты f₁(t)..f₆(t) сброшены к формулам по умолчанию!", "info");
+    });
+  }
+
+  // Кнопки на вкладке 2
+  const btnRandPertsTab2 = document.getElementById("btnRandPertsTab2");
+  if (btnRandPertsTab2) {
+    btnRandPertsTab2.addEventListener("click", () => {
+      model.randomizePerturbations();
+      updateAllPerturbationRows();
+      runSimulation(false);
+      showToast("Сгенерированы случайные fₘ(t) и пересчитан график!", "success");
+    });
+  }
+
+  const btnResetPertsTab2 = document.getElementById("btnResetPertsTab2");
+  if (btnResetPertsTab2) {
+    btnResetPertsTab2.addEventListener("click", () => {
+      model.initDefaultPerturbations();
+      updateAllPerturbationRows();
+      runSimulation(false);
+      showToast("Коэффициенты fₘ(t) сброшены к дефолтным и график пересчитан!", "info");
+    });
+  }
+}
+
+function updatePertRowBody(idx) {
+  const p = model.perturbationParams[idx];
+  const body = document.getElementById(`pert_body_${idx}`);
+  if (!p || !body) return;
+
+  const modeSelect = document.getElementById(`pert_mode_select_${idx}`);
+  if (modeSelect) p.type = modeSelect.value;
+  const degSelect = document.getElementById(`pert_deg_select_${idx}`);
+  if (degSelect) p.degree = parseInt(degSelect.value) || 3;
+
+  const baseSpecs = [
+    { title: "Опыт разработчиков", term: "· t² +" },
+    { title: "Опыт персонала", term: "· cos²(1.5πt − π/6) +" },
+    { title: "Трудоемкость", term: "· sin(πt − π/6) +" },
+    { title: "Курс рубля к доллару", term: "· t +" },
+    { title: "Репутация разработчиков", term: "· sin²(πt − π/6) +" },
+    { title: "Репутация экспл. орг.", term: "· cos²(πt) +" }
+  ];
+
+  if (p.type === "base") {
+    const spec = baseSpecs[idx] || { term: "· t +" };
+    body.innerHTML = `
+      <span class="eq-f-title">${p.symbol}(t) = </span>
+      <span class="eq-term-span">
+        <input type="number" step="0.05" class="eq-coeff-num" id="pert_k_input_${idx}" value="${Number(p.k).toFixed(2)}">
+        <span class="eq-term-str">${spec.term}</span>
+      </span>
+      <span class="eq-term-span">
+        <input type="number" step="0.05" class="eq-coeff-num" id="pert_m_input_${idx}" value="${Number(p.m).toFixed(2)}">
+      </span>
+    `;
+
+    const inpK = body.querySelector(`#pert_k_input_${idx}`);
+    if (inpK) {
+      inpK.addEventListener("input", (e) => {
+        p.k = parseFloat(e.target.value) || 0.0;
+      });
+    }
+    const inpM = body.querySelector(`#pert_m_input_${idx}`);
+    if (inpM) {
+      inpM.addEventListener("input", (e) => {
+        p.m = parseFloat(e.target.value) || 0.0;
+      });
+    }
+  } else {
+    const deg = p.degree || 3;
+    body.innerHTML = `
+      <span class="eq-f-title">${p.symbol}(t) = </span>
+      <span class="eq-term-span" id="pert_term_a_${idx}" style="display: ${deg === 3 ? 'inline-flex' : 'none'};">
+        <input type="number" step="0.05" class="eq-coeff-num" id="pert_coeff_a_${idx}" value="${Number(p.a || 0).toFixed(2)}">
+        <span class="eq-term-str">· t³ +</span>
+      </span>
+      <span class="eq-term-span" id="pert_term_b_${idx}" style="display: ${deg >= 2 ? 'inline-flex' : 'none'};">
+        <input type="number" step="0.05" class="eq-coeff-num" id="pert_coeff_b_${idx}" value="${Number(p.b || 0).toFixed(2)}">
+        <span class="eq-term-str">· t² +</span>
+      </span>
+      <span class="eq-term-span" id="pert_term_c_${idx}">
+        <input type="number" step="0.05" class="eq-coeff-num" id="pert_coeff_c_${idx}" value="${Number(p.c || 0).toFixed(2)}">
+        <span class="eq-term-str">· t +</span>
+      </span>
+      <span class="eq-term-span" id="pert_term_d_${idx}">
+        <input type="number" step="0.05" class="eq-coeff-num" id="pert_coeff_d_${idx}" value="${Number(p.d || 0).toFixed(2)}">
+      </span>
+    `;
+
+    ["a", "b", "c", "d"].forEach(cf => {
+      const inp = body.querySelector(`#pert_coeff_${cf}_${idx}`);
+      if (inp) {
+        inp.addEventListener("input", (e) => {
+          p[cf] = parseFloat(e.target.value) || 0.0;
+        });
+      }
+    });
+  }
+}
+
+function updateAllPerturbationRows() {
+  for (let idx = 0; idx < 6; idx++) {
+    const p = model.perturbationParams[idx];
+    const modeSelect = document.getElementById(`pert_mode_select_${idx}`);
+    if (modeSelect) modeSelect.value = p.type;
+    const degWrap = document.getElementById(`pert_deg_wrap_${idx}`);
+    if (degWrap) degWrap.style.display = (p.type === "poly") ? "inline-flex" : "none";
+    const degSelect = document.getElementById(`pert_deg_select_${idx}`);
+    if (degSelect) degSelect.value = String(p.degree || 3);
+    updatePertRowBody(idx);
+  }
+}
+
+function syncPerturbationParamsFromDOM() {
+  if (!model || !model.perturbationParams) return;
+  for (let idx = 0; idx < 6; idx++) {
+    const p = model.perturbationParams[idx];
+    const modeSelect = document.getElementById(`pert_mode_select_${idx}`);
+    if (modeSelect) p.type = modeSelect.value;
+    const degSelect = document.getElementById(`pert_deg_select_${idx}`);
+    if (degSelect) p.degree = parseInt(degSelect.value) || 3;
+
+    if (p.type === "base") {
+      const inpK = document.getElementById(`pert_k_input_${idx}`);
+      if (inpK) p.k = parseFloat(inpK.value) || 0.0;
+      const inpM = document.getElementById(`pert_m_input_${idx}`);
+      if (inpM) p.m = parseFloat(inpM.value) || 0.0;
+    } else {
+      const inpA = document.getElementById(`pert_coeff_a_${idx}`);
+      if (inpA) p.a = parseFloat(inpA.value) || 0.0;
+      const inpB = document.getElementById(`pert_coeff_b_${idx}`);
+      if (inpB) p.b = parseFloat(inpB.value) || 0.0;
+      const inpC = document.getElementById(`pert_coeff_c_${idx}`);
+      if (inpC) p.c = parseFloat(inpC.value) || 0.0;
+      const inpD = document.getElementById(`pert_coeff_d_${idx}`);
+      if (inpD) p.d = parseFloat(inpD.value) || 0.0;
+    }
+  }
+}
+
+
 // СПИСОК ВСЕХ 187 УРАВНЕНИЙ СВЯЗИ F_k(x) (ПО СКРИНШОТУ ПРЕПОДАВАТЕЛЯ)
 // ----------------------------------------------------------------------------
 function initEquationsList() {
@@ -479,8 +765,8 @@ function initEquationsList() {
     row.innerHTML = `
       <div class="eq-row-top">
         <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-          <span class="eq-f-label">F <strong>${f_id}</strong></span>
-          <span class="eq-arg-desc">(аргумент u${func.arg_u} / ${chArg.iso_node}: ${chArg.short_name})</span>
+          <span class="eq-f-label">F${toSubscript(f_id)}</span>
+          <span class="eq-arg-desc">(аргумент u${toSubscript(func.arg_u)} / ${chArg.iso_node}: ${chArg.short_name})</span>
           <span class="badge-custom-func" id="badge_custom_${f_id}" style="display: none;" title="Коэффициенты этой функции заданы вручную">
             Введено вручную
             <button type="button" class="badge-custom-reset-btn" title="Снять отметку ручного ввода" onclick="resetSingleCustomFlag(${f_id})">&times;</button>
@@ -496,18 +782,18 @@ function initEquationsList() {
         </div>
       </div>
       <div class="eq-row-body">
-        <span class="eq-f-title">F ${f_id} (x) = </span>
+        <span class="eq-f-title">F${toSubscript(f_id)}(x) = </span>
         <span class="eq-term-span" id="term_a_${f_id}" style="display: ${func.degree === 3 ? 'inline-flex' : 'none'};">
           <input type="number" step="0.05" class="eq-coeff-num" id="coeff_a_${f_id}" value="${func.a.toFixed(2)}">
-          <span class="eq-term-str">*x³ +</span>
+          <span class="eq-term-str">· x³ +</span>
         </span>
         <span class="eq-term-span" id="term_b_${f_id}" style="display: ${func.degree >= 2 ? 'inline-flex' : 'none'};">
           <input type="number" step="0.05" class="eq-coeff-num" id="coeff_b_${f_id}" value="${func.b.toFixed(2)}">
-          <span class="eq-term-str">*x² +</span>
+          <span class="eq-term-str">· x² +</span>
         </span>
         <span class="eq-term-span" id="term_c_${f_id}">
           <input type="number" step="0.05" class="eq-coeff-num" id="coeff_c_${f_id}" value="${func.c.toFixed(2)}">
-          <span class="eq-term-str">*x +</span>
+          <span class="eq-term-str">· x +</span>
         </span>
         <span class="eq-term-span" id="term_d_${f_id}">
           <input type="number" step="0.05" class="eq-coeff-num" id="coeff_d_${f_id}" value="${func.d.toFixed(2)}">
@@ -774,6 +1060,7 @@ function setAllFunctionsDegree(deg) {
 // ВЫЧИСЛЕНИЯ РУНГЕ-КУТТА
 // ============================================================================
 function runSimulation(isManual = false) {
+  syncPerturbationParamsFromDOM();
   const u0 = [];
   for (let idx = 0; idx < 28; idx++) {
     const inp = document.getElementById(`u0_input_${idx}`);
@@ -859,6 +1146,11 @@ function initPerturbationControls() {
     });
     renderPerturbationChart();
   });
+
+  const cbPertLbl = document.getElementById("cbShowPertLabels");
+  if (cbPertLbl) {
+    cbPertLbl.addEventListener("change", renderPerturbationChart);
+  }
 }
 
 function isolatePerturbation(targetIdx) {
@@ -867,6 +1159,323 @@ function isolatePerturbation(targetIdx) {
   });
   renderPerturbationChart();
 }
+
+// ----------------------------------------------------------------------------
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И ПЛАГИН ПРЯМЫХ ПОДПИСЕЙ ЛИНИЙ (ДЛЯ ОТЧЕТОВ И ПЕЧАТИ)
+// ----------------------------------------------------------------------------
+function drawRoundRect(ctx, x, y, w, h, r = 4) {
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(x, y, w, h, r);
+  } else {
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+  }
+}
+
+const directLineLabelsPlugin = {
+  id: "directLineLabels",
+  afterDatasetsDraw(chart, args, pluginOptions) {
+    if (!pluginOptions || pluginOptions.enabled === false) return;
+    const { ctx, chartArea } = chart;
+    if (!chartArea) return;
+
+    ctx.save();
+    const mode = pluginOptions.mode || "multi";
+
+    if (mode === "perturbations") {
+      // 6 возмущений f1..f6: плашки у кривых с точками и направляющими + концевые значения
+      chart.data.datasets.forEach((ds, i) => {
+        const meta = chart.getDatasetMeta(i);
+        if (meta.hidden || !meta.data || meta.data.length < 10) return;
+
+        const pIdx = ds.pertIdx !== undefined ? ds.pertIdx : i;
+        const pInfo = PERTURBATIONS[pIdx] || {};
+        const tPositions = [0.70, 0.45, 0.58, 0.76, 0.52, 0.35];
+        const tPos = tPositions[pIdx % tPositions.length];
+        const stepIdx = Math.min(meta.data.length - 2, Math.round(tPos * (meta.data.length - 1)));
+        const pt = meta.data[stepIdx];
+        if (!pt) return;
+
+        const PERT_SHORT_NAMES = ["Опыт разработчиков", "Опыт персонала", "Трудоемкость", "Курс валют", "Репутация разр.", "Репутация экспл."];
+        const shortName = PERT_SHORT_NAMES[pIdx] || (pInfo.title ? pInfo.title.split(' ')[0] : '');
+        const badgeText = `${pInfo.symbol || ('f' + toSubscript(pIdx + 1))}: ${shortName}`;
+
+        ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const textMetrics = ctx.measureText(badgeText);
+        const padX = 7;
+        const boxW = textMetrics.width + padX * 2;
+        const boxH = 20;
+
+        const offsetY = (pIdx % 2 === 0) ? -22 : 12;
+        const bx = Math.min(chartArea.right - boxW - 4, Math.max(chartArea.left + 4, pt.x - boxW / 2));
+        const by = Math.min(chartArea.bottom - boxH - 2, Math.max(chartArea.top + 2, pt.y + offsetY));
+
+        // Направляющая линия от точки на кривой к плашке
+        ctx.strokeStyle = ds.borderColor || "#334155";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(pt.x, pt.y);
+        ctx.lineTo(bx + boxW / 2, by + (offsetY < 0 ? boxH : 0));
+        ctx.stroke();
+
+        // Точка на кривой
+        ctx.fillStyle = ds.borderColor || "#334155";
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Фон плашки
+        ctx.fillStyle = "rgba(255, 255, 255, 0.94)";
+        ctx.beginPath();
+        drawRoundRect(ctx, bx, by, boxW, boxH, 4);
+        ctx.fill();
+
+        // Рамка плашки
+        ctx.strokeStyle = ds.borderColor || "#334155";
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+
+        // Текст
+        ctx.fillStyle = "#0f172a";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(badgeText, bx + boxW / 2, by + boxH / 2);
+      });
+
+      // Концевые плашки со значениями у правого края (t=1.00)
+      const pertEndLabels = [];
+      chart.data.datasets.forEach((ds, i) => {
+        const meta = chart.getDatasetMeta(i);
+        if (meta.hidden || !meta.data || meta.data.length < 5) return;
+        const lastPt = meta.data[meta.data.length - 1];
+        if (!lastPt) return;
+
+        const pIdx = ds.pertIdx !== undefined ? ds.pertIdx : i;
+        const pInfo = PERTURBATIONS[pIdx] || {};
+        const sym = pInfo.symbol || ('f' + toSubscript(pIdx + 1));
+        const endVal = ds.data[ds.data.length - 1];
+
+        pertEndLabels.push({
+          text: `${sym}: ${typeof endVal === "number" ? endVal.toFixed(3) : ""}`,
+          color: ds.borderColor || "#334155",
+          origX: lastPt.x,
+          origY: lastPt.y,
+          y: lastPt.y
+        });
+      });
+
+      if (pertEndLabels.length > 0) {
+        pertEndLabels.sort((a, b) => a.y - b.y);
+        const itemH = 17;
+        const totalSpan = itemH + 3;
+        for (let pass = 0; pass < 8; pass++) {
+          for (let k = 0; k < pertEndLabels.length - 1; k++) {
+            const dist = pertEndLabels[k + 1].y - pertEndLabels[k].y;
+            if (dist < totalSpan) {
+              const shift = (totalSpan - dist) / 2;
+              pertEndLabels[k].y -= shift;
+              pertEndLabels[k + 1].y += shift;
+            }
+          }
+        }
+        const topLimit = chartArea.top + itemH / 2 + 2;
+        const bottomLimit = chartArea.bottom - itemH / 2 - 2;
+        pertEndLabels.forEach(lbl => {
+          lbl.y = Math.max(topLimit, Math.min(bottomLimit, lbl.y));
+        });
+
+        ctx.font = 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        pertEndLabels.forEach(lbl => {
+          const padX = 5;
+          const textW = ctx.measureText(lbl.text).width;
+          const boxW = textW + padX * 2;
+          const boxH = itemH;
+          const bx = Math.min(chartArea.right - boxW - 2, lbl.origX - boxW - 2);
+          const by = lbl.y - boxH / 2;
+
+          if (Math.abs(lbl.origY - lbl.y) > 2 || Math.abs(lbl.origX - (bx + boxW)) > 2) {
+            ctx.strokeStyle = lbl.color;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(lbl.origX, lbl.origY);
+            ctx.lineTo(bx + boxW, lbl.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          ctx.fillStyle = lbl.color;
+          ctx.beginPath();
+          ctx.arc(lbl.origX, lbl.origY, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+          ctx.beginPath();
+          drawRoundRect(ctx, bx, by, boxW, boxH, 3);
+          ctx.fill();
+
+          ctx.strokeStyle = lbl.color;
+          ctx.lineWidth = 1.3;
+          ctx.stroke();
+
+          ctx.fillStyle = lbl.color;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(lbl.text, bx + boxW / 2, by + boxH / 2);
+        });
+      }
+
+    } else if (mode === "single") {
+      // Одиночный режим: начало, середина, конец с числовыми значениями и дельтой
+      const meta = chart.getDatasetMeta(0);
+      if (meta && !meta.hidden && meta.data && meta.data.length > 0) {
+        const ds = chart.data.datasets[0];
+        const ptStart = meta.data[0];
+        const ptMid = meta.data[Math.floor(meta.data.length / 2)];
+        const ptEnd = meta.data[meta.data.length - 1];
+        const col = ds.borderColor || "#1e3a8a";
+
+        const drawSinglePill = (pt, text, alignRight = false, isTop = true) => {
+          ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          const w = ctx.measureText(text).width + 16;
+          const h = 22;
+          const bx = alignRight ? pt.x - w - 8 : (pt.x + (isTop ? 8 : -w / 2));
+          const by = isTop ? pt.y - h - 8 : pt.y + 8;
+          const clampedX = Math.min(chartArea.right - w - 4, Math.max(chartArea.left + 4, bx));
+          const clampedY = Math.min(chartArea.bottom - h - 4, Math.max(chartArea.top + 4, by));
+
+          ctx.fillStyle = col;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+          ctx.beginPath();
+          drawRoundRect(ctx, clampedX, clampedY, w, h, 4);
+          ctx.fill();
+
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 1.8;
+          ctx.stroke();
+
+          ctx.fillStyle = col;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(text, clampedX + w / 2, clampedY + h / 2);
+        };
+
+        const vStart = ds.data[0];
+        const vEnd = ds.data[ds.data.length - 1];
+        const diff = vEnd - vStart;
+        const diffStr = (diff >= 0 ? "+" : "") + diff.toFixed(3);
+
+        drawSinglePill(ptStart, `Начало: ${vStart.toFixed(3)}`, false, vStart < vEnd);
+        drawSinglePill(ptMid, `${ds.lineLabel || ds.label}`, false, false);
+        drawSinglePill(ptEnd, `Финал: ${vEnd.toFixed(3)} (${diffStr})`, true, vEnd >= vStart);
+      }
+
+    } else if (mode === "multi") {
+      // Множественный режим: подписи у концов линий с антиколлизией
+      const rawLabels = [];
+      chart.data.datasets.forEach((ds, i) => {
+        const meta = chart.getDatasetMeta(i);
+        if (meta.hidden || !meta.data || meta.data.length < 5) return;
+        const lastPt = meta.data[meta.data.length - 1];
+        if (!lastPt) return;
+
+        rawLabels.push({
+          dsIndex: i,
+          text: ds.lineBadge || ds.label.split(':')[0],
+          color: ds.borderColor || "#334155",
+          origX: lastPt.x,
+          origY: lastPt.y,
+          y: lastPt.y
+        });
+      });
+
+      if (rawLabels.length === 0) {
+        ctx.restore();
+        return;
+      }
+
+      rawLabels.sort((a, b) => a.y - b.y);
+
+      const itemHeight = rawLabels.length > 14 ? 13.5 : 17;
+      const minGap = 2;
+      const totalSpan = itemHeight + minGap;
+
+      // 8 итераций релаксации взаимного отталкивания меток
+      for (let pass = 0; pass < 8; pass++) {
+        for (let k = 0; k < rawLabels.length - 1; k++) {
+          const dist = rawLabels[k + 1].y - rawLabels[k].y;
+          if (dist < totalSpan) {
+            const shift = (totalSpan - dist) / 2;
+            rawLabels[k].y -= shift;
+            rawLabels[k + 1].y += shift;
+          }
+        }
+      }
+
+      const topLimit = chartArea.top + itemHeight / 2 + 2;
+      const bottomLimit = chartArea.bottom - itemHeight / 2 - 2;
+      rawLabels.forEach(lbl => {
+        lbl.y = Math.max(topLimit, Math.min(bottomLimit, lbl.y));
+      });
+
+      ctx.font = rawLabels.length > 14
+        ? 'bold 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+        : 'bold 10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      rawLabels.forEach(lbl => {
+        const padX = 5;
+        const textW = ctx.measureText(lbl.text).width;
+        const boxW = textW + padX * 2;
+        const boxH = itemHeight;
+
+        const bx = Math.min(chartArea.right - boxW - 2, lbl.origX - boxW - 2);
+        const by = lbl.y - boxH / 2;
+
+        if (Math.abs(lbl.origY - lbl.y) > 2 || Math.abs(lbl.origX - (bx + boxW)) > 2) {
+          ctx.strokeStyle = lbl.color;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2, 2]);
+          ctx.beginPath();
+          ctx.moveTo(lbl.origX, lbl.origY);
+          ctx.lineTo(bx + boxW, lbl.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        ctx.fillStyle = lbl.color;
+        ctx.beginPath();
+        ctx.arc(lbl.origX, lbl.origY, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+        ctx.beginPath();
+        drawRoundRect(ctx, bx, by, boxW, boxH, 3);
+        ctx.fill();
+
+        ctx.strokeStyle = lbl.color;
+        ctx.lineWidth = 1.3;
+        ctx.stroke();
+
+        ctx.fillStyle = lbl.color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(lbl.text, bx + boxW / 2, by + boxH / 2);
+      });
+    }
+
+    ctx.restore();
+  }
+};
 
 function renderPerturbationChart() {
   if (!currentResults || typeof Chart === "undefined") return;
@@ -879,6 +1488,8 @@ function renderPerturbationChart() {
     if (cb && cb.checked) {
       datasets.push({
         label: `${p.symbol}: ${p.title}`,
+        lineBadge: p.symbol,
+        pertIdx: idx,
         data: currentResults.lambdas[idx],
         borderColor: PERT_COLORS[idx],
         backgroundColor: "transparent",
@@ -894,15 +1505,30 @@ function renderPerturbationChart() {
     pertChartInstance.destroy();
   }
 
+  const showLabels = document.getElementById("cbShowPertLabels") ? document.getElementById("cbShowPertLabels").checked : true;
+
+  let maxY = 1.0;
+  let minY = 0.0;
+  datasets.forEach(ds => {
+    ds.data.forEach(v => {
+      if (v > maxY) maxY = v;
+      if (v < minY) minY = v;
+    });
+  });
+  const yMax = Math.max(1.1, Math.ceil((maxY * 1.08) * 10) / 10);
+  const yMin = minY < 0 ? Math.floor((minY * 1.1) * 10) / 10 : 0.0;
+
   pertChartInstance = new Chart(ctx, {
     type: "line",
     data: {
       labels: currentResults.t,
       datasets: datasets
     },
+    plugins: [directLineLabelsPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       interaction: {
         mode: "index",
         intersect: false
@@ -916,16 +1542,28 @@ function renderPerturbationChart() {
           callbacks: {
             label: (ctx) => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(3)}`
           }
+        },
+        directLineLabels: {
+          enabled: showLabels,
+          mode: "perturbations"
         }
       },
       scales: {
         x: {
           title: { display: true, text: "Время t ∈ [0, 1]", font: { weight: "bold" } },
-          grid: { color: "#e2e8f0" }
+          grid: { color: "#e2e8f0" },
+          ticks: {
+            maxRotation: 0,
+            autoSkip: false,
+            callback: function(value) {
+              const tVal = Number(this.getLabelForValue(value));
+              return (Math.round(tVal * 100) % 10 === 0) ? tVal.toFixed(1) : "";
+            }
+          }
         },
         y: {
-          min: 0.0,
-          max: 1.1,
+          min: yMin,
+          max: yMax,
           title: { display: true, text: "Интенсивность возмущения", font: { weight: "bold" } },
           grid: { color: "#e2e8f0" }
         }
@@ -1028,6 +1666,15 @@ function initDynamicsControls() {
       renderDynamicsChart();
     });
   });
+
+  const cbDynLbl = document.getElementById("cbShowDynLabels");
+  if (cbDynLbl) {
+    cbDynLbl.addEventListener("change", renderDynamicsChart);
+  }
+  const selDynStyle = document.getElementById("selectDynLabelStyle");
+  if (selDynStyle) {
+    selDynStyle.addEventListener("change", renderDynamicsChart);
+  }
 }
 
 function isolateCharacteristic(targetIdx) {
@@ -1042,6 +1689,8 @@ function renderDynamicsChart() {
 
   const ctx = document.getElementById("dynChart").getContext("2d");
   const isSingle = document.getElementById("dynModeSingle").checked;
+  const showLabels = document.getElementById("cbShowDynLabels") ? document.getElementById("cbShowDynLabels").checked : true;
+  const labelStyle = document.getElementById("selectDynLabelStyle") ? document.getElementById("selectDynLabelStyle").value : "iso";
 
   if (dynChartInstance) {
     dynChartInstance.destroy();
@@ -1091,34 +1740,45 @@ function renderDynamicsChart() {
         labels: currentResults.t,
         datasets: [{
           label: `${ch.var_name} (${ch.iso_node}): ${ch.short_name}`,
+          lineLabel: `${ch.var_name} (${ch.iso_node}): ${ch.name}`,
           data: yVals,
           borderColor: color,
           backgroundColor: ch.is_quality ? "rgba(30, 58, 138, 0.05)" : "rgba(185, 28, 28, 0.05)",
           borderWidth: 3.0,
           fill: true,
-          tension: 0.1,
-          pointRadius: (ctx) => {
-            const i = ctx.dataIndex;
-            return (i === 0 || i === 100) ? 6 : 0;
-          },
-          pointBackgroundColor: color
+          tension: 0.32,
+          pointRadius: 0
         }]
       },
+      plugins: [directLineLabelsPlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        animation: false,
         plugins: {
           legend: { position: "top" },
           tooltip: {
             callbacks: {
               label: (ctx) => ` Значение: ${ctx.parsed.y.toFixed(3)}`
             }
+          },
+          directLineLabels: {
+            enabled: showLabels,
+            mode: "single"
           }
         },
         scales: {
           x: {
             title: { display: true, text: "Время t ∈ [0, 1]", font: { weight: "bold" } },
-            grid: { color: "#e2e8f0" }
+            grid: { color: "#e2e8f0" },
+            ticks: {
+              maxRotation: 0,
+              autoSkip: false,
+              callback: function(value) {
+                const tVal = Number(this.getLabelForValue(value));
+                return (Math.round(tVal * 100) % 10 === 0) ? tVal.toFixed(1) : "";
+              }
+            }
           },
           y: {
             min: Math.max(0.0, Math.round((yMin - 0.15 * ySpan) * 100) / 100),
@@ -1141,14 +1801,31 @@ function renderDynamicsChart() {
       const cb = document.getElementById(`dyn_cb_${idx}`);
       if (cb && cb.checked) {
         countActive++;
+
+        const uCurve = currentResults.u[idx];
+        const endVal = uCurve && uCurve.length ? uCurve[uCurve.length - 1] : 0;
+        const valStr = endVal.toFixed(3);
+
+        let badge = "";
+        if (labelStyle === "x_num") {
+          badge = `x${toSubscript(idx + 1)}: ${valStr}`;
+        } else if (labelStyle === "both") {
+          badge = `x${toSubscript(idx + 1)}: ${ch.var_name} = ${valStr}`;
+        } else if (labelStyle === "short" || countActive > 14) {
+          badge = `${ch.var_name}: ${valStr}`;
+        } else {
+          badge = `${ch.var_name} (${ch.iso_node}): ${valStr}`;
+        }
+
         datasets.push({
           label: `${ch.var_name} (${ch.iso_node}): ${ch.short_name}`,
+          lineBadge: badge,
           data: currentResults.u[idx],
           borderColor: PALETTE_28[idx],
           borderWidth: ch.is_quality ? 2.5 : 1.5,
           borderDash: ch.is_quality ? [] : [4, 4],
           backgroundColor: "transparent",
-          tension: 0.1,
+          tension: 0.32,
           pointRadius: 0
         });
       }
@@ -1157,33 +1834,68 @@ function renderDynamicsChart() {
     document.getElementById("dynChartTitle").textContent =
       `Динамика характеристик системы качества ПО (отображено ${countActive} из 28)`;
 
+    let allY = [];
+    datasets.forEach(ds => {
+      if (ds.data && ds.data.length) allY = allY.concat(ds.data);
+    });
+    const yMin = allY.length ? Math.min(...allY) : 0.0;
+    const yMax = allY.length ? Math.max(...allY) : 1.0;
+    const ySpan = Math.max(yMax - yMin, 0.08);
+
+    // Масштабирование оси Y по диапазону (как в академическом отчете matplotlib):
+    // если выбрана группа со сжатым диапазоном (напр. качество u1..u6), масштабируем ось,
+    // чтобы нелинейная динамика, изгибы и S-образные перегибы были наглядно видны, а не сжимались в полоску.
+    const isNarrowSpan = (ySpan < 0.45);
+    const scaleYMin = isNarrowSpan 
+      ? Math.max(0.0, Math.floor((yMin - 0.10 * ySpan) * 20) / 20)
+      : 0.0;
+    const scaleYMax = isNarrowSpan
+      ? Math.min(1.0, Math.ceil((yMax + 0.14 * ySpan) * 20) / 20)
+      : 1.0;
+
     dynChartInstance = new Chart(ctx, {
       type: "line",
       data: {
         labels: currentResults.t,
         datasets: datasets
       },
+      plugins: [directLineLabelsPlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        animation: false,
         interaction: { mode: "nearest", intersect: false },
         plugins: {
           legend: {
-            position: countActive <= 8 ? "top" : "right",
+            display: countActive <= 12,
+            position: countActive <= 8 ? "top" : "bottom",
             labels: {
               boxWidth: 12,
-              font: { size: countActive > 12 ? 9.5 : 11 }
+              font: { size: 10.5 }
             }
+          },
+          directLineLabels: {
+            enabled: showLabels,
+            mode: "multi",
+            labelStyle: labelStyle
           }
         },
         scales: {
           x: {
             title: { display: true, text: "Время t ∈ [0, 1]", font: { weight: "bold" } },
-            grid: { color: "#e2e8f0" }
+            grid: { color: "#e2e8f0" },
+            ticks: {
+              maxRotation: 0,
+              autoSkip: false,
+              callback: function(value) {
+                const tVal = Number(this.getLabelForValue(value));
+                return (Math.round(tVal * 100) % 10 === 0) ? tVal.toFixed(1) : "";
+              }
+            }
           },
           y: {
-            min: 0.0,
-            max: 1.05,
+            min: scaleYMin,
+            max: scaleYMax,
             title: { display: true, text: "Значение характеристики uᵢ(t)", font: { weight: "bold" } },
             grid: { color: "#e2e8f0" }
           }
@@ -1194,10 +1906,14 @@ function renderDynamicsChart() {
 }
 
 // ============================================================================
-// ВКЛАДКА 4: ЛЕПЕСТКОВАЯ (РАДАРНАЯ) ДИАГРАММА
+// ВКЛАДКА 4: ЛЕПЕСТКОВАЯ (РАДАРНАЯ) ДИАГРАММА (СЕТКА + ОДИНОЧНЫЙ + НАЛОЖЕНИЕ)
 // ============================================================================
+
 function initRadarControls() {
-  document.querySelectorAll("input[name='radarTime'], input[name='radarScope']").forEach(radio => {
+  document.querySelectorAll("input[name='radarViewMode']").forEach(radio => {
+    radio.addEventListener("change", handleRadarModeChange);
+  });
+  document.querySelectorAll("input[name='radarTime'], input[name='radarScope'], input[name='radarScaleMode']").forEach(radio => {
     radio.addEventListener("change", renderRadarChart);
   });
   const cbLimit = document.getElementById("cbShowRadarLimit");
@@ -1206,144 +1922,396 @@ function initRadarControls() {
   }
 }
 
+function handleRadarModeChange() {
+  const mode = document.querySelector("input[name='radarViewMode']:checked")?.value || "grid";
+  const singleContainer = document.getElementById("radarSingleContainer");
+  const gridContainer = document.getElementById("radarGridContainer");
+  const sidebarTimeBox = document.getElementById("radarSidebarTimeBox");
+
+  if (mode === "grid") {
+    if (singleContainer) singleContainer.style.display = "none";
+    if (gridContainer) gridContainer.style.display = "grid";
+    if (sidebarTimeBox) sidebarTimeBox.style.display = "none";
+  } else if (mode === "single") {
+    if (singleContainer) singleContainer.style.display = "block";
+    if (gridContainer) gridContainer.style.display = "none";
+    if (sidebarTimeBox) sidebarTimeBox.style.display = "block";
+  } else if (mode === "overlay") {
+    if (singleContainer) singleContainer.style.display = "block";
+    if (gridContainer) gridContainer.style.display = "none";
+    if (sidebarTimeBox) sidebarTimeBox.style.display = "none";
+  }
+  renderRadarChart();
+}
+
+function exportRadarCurrent() {
+  const mode = document.querySelector("input[name='radarViewMode']:checked")?.value || "grid";
+  if (mode === "single" || mode === "overlay") {
+    exportChartPNG("radarChart", "Лепестковая_диаграмма_качества.png");
+  } else {
+    // В режиме сетки скачиваем итоговый срез (t=1.00)
+    exportChartPNG("radarChart_t4", "Лепестковая_диаграмма_финал_t1_00.png");
+  }
+}
+
+const fromSubMap = { '₀':'0', '₁':'1', '₂':'2', '₃':'3', '₄':'4', '₅':'5', '₆':'6', '₇':'7', '₈':'8', '₉':'9' };
+function extractIsoNum(isoStr) {
+  return String(isoStr).split('').map(c => fromSubMap[c] || (c >= '0' && c <= '9' ? c : '')).join('');
+}
+
+const radarCrispLabelsPlugin = {
+  id: "radarCrispLabels",
+  afterDraw(chart, args, pluginOptions) {
+    if (!pluginOptions || !pluginOptions.enabled) return;
+    const scale = chart.scales.r;
+    if (!scale) return;
+
+    const { ctx } = chart;
+    const items = pluginOptions.items || [];
+    const isGrid = !!pluginOptions.isGrid;
+    const mainSize = isGrid ? 12 : 16;
+    const subSize = isGrid ? 9.5 : 12.5;
+    const padOut = isGrid ? 15 : 22;
+
+    ctx.save();
+    items.forEach((item, i) => {
+      const pos = scale.getPointPositionForValue(i, scale.max);
+      const dx = pos.x - scale.xCenter;
+      const dy = pos.y - scale.yCenter;
+      const dist = Math.hypot(dx, dy) || 1;
+      const ux = dx / dist;
+      const uy = dy / dist;
+
+      const anchorX = scale.xCenter + ux * (dist + padOut);
+      const anchorY = scale.yCenter + uy * (dist + padOut);
+
+      const parts = [
+        { text: "u", sub: false },
+        { text: String(item.id), sub: true },
+        { text: " (U", sub: false },
+        { text: String(item.isoNum), sub: true },
+        { text: ")", sub: false }
+      ];
+
+      let totalW = 0;
+      parts.forEach(p => {
+        ctx.font = `700 ${p.sub ? subSize : mainSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        totalW += ctx.measureText(p.text).width;
+      });
+
+      let startX = anchorX;
+      if (Math.abs(ux) < 0.15) startX = anchorX - totalW / 2;
+      else if (ux < 0) startX = anchorX - totalW;
+
+      startX = Math.max(6, Math.min(chart.width - totalW - 6, startX));
+
+      let curX = startX;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = item.isQuality ? "#1e3a8a" : "#0f172a";
+
+      parts.forEach(p => {
+        ctx.font = `700 ${p.sub ? subSize : mainSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        const yOffset = p.sub ? (isGrid ? 4 : 4.5) : 0;
+        ctx.fillText(p.text, curX, anchorY + yOffset);
+        curX += ctx.measureText(p.text).width;
+      });
+    });
+    ctx.restore();
+  }
+};
+
 function renderRadarChart() {
   if (!currentResults || typeof Chart === "undefined") return;
 
-  const ctx = document.getElementById("radarChart").getContext("2d");
-  const timeChoice = document.querySelector("input[name='radarTime']:checked").value;
-  const scopeChoice = document.querySelector("input[name='radarScope']:checked").value;
-
+  const mode = document.querySelector("input[name='radarViewMode']:checked")?.value || "grid";
+  const scopeChoice = document.querySelector("input[name='radarScope']:checked")?.value || "all28";
+  const scaleMode = document.querySelector("input[name='radarScaleMode']:checked")?.value || "normalized";
+  const isNorm = (scaleMode === "normalized");
   const isTop6 = (scopeChoice === "top6");
+  const numVars = isTop6 ? 6 : 28;
+
+  // Метки осей: u₁ (U₅), u₂ (U₂₄)... с крупным и четким шрифтом
   const labels = isTop6
     ? CHARACTERISTICS.slice(0, 6).map(ch => `${ch.var_name} (${ch.iso_node})`)
     : CHARACTERISTICS.map(ch => `${ch.var_name} (${ch.iso_node})`);
-  const numVars = isTop6 ? 6 : 28;
+
+  const crispItems = CHARACTERISTICS.slice(0, numVars).map(ch => ({
+    id: ch.id,
+    isoNum: extractIsoNum(ch.iso_node),
+    isQuality: ch.is_quality
+  }));
+
+  const transformValues = (arr) => arr.slice(0, numVars).map((v, idx) =>
+    (isNorm && !CHARACTERISTICS[idx].is_quality) ? Math.max(0, 1 - v) : v
+  );
 
   const qMap = {
-    t0: { color: "#3182ce", bg: "rgba(49, 130, 206, 0.15)", label: "Начало (t=0.00)" },
-    t1: { color: "#319795", bg: "rgba(49, 151, 149, 0.15)", label: "1-я четв. (t=0.25)" },
-    t2: { color: "#38a169", bg: "rgba(56, 161, 105, 0.15)", label: "2-я четв. (t=0.50)" },
-    t3: { color: "#d69e2e", bg: "rgba(214, 158, 46, 0.15)", label: "3-я четв. (t=0.75)" },
-    t4: { color: "#e53e3e", bg: "rgba(229, 62, 62, 0.15)", label: "Финал (t=1.00)" }
+    t0: { color: "#2563eb", bg: "rgba(37, 99, 235, 0.20)", label: "Начало (t=0.00)" },
+    t1: { color: "#0d9488", bg: "rgba(13, 148, 136, 0.20)", label: "1-я четв. (t=0.25)" },
+    t2: { color: "#16a34a", bg: "rgba(22, 163, 74, 0.20)", label: "2-я четв. (t=0.50)" },
+    t3: { color: "#d97706", bg: "rgba(217, 119, 6, 0.20)", label: "3-я четв. (t=0.75)" },
+    t4: { color: "#dc2626", bg: "rgba(220, 38, 38, 0.20)", label: "Финал (t=1.00)" }
   };
-
-  const datasets = [];
-  const quarters = currentResults.quarters;
 
   // Красная линия нормативного предела (допуска)
   const cbLimit = document.getElementById("cbShowRadarLimit");
   const showLimit = !cbLimit || cbLimit.checked;
+  const rawLimitsArray = [];
   const limitsArray = [];
   for (let i = 0; i < numVars; i++) {
     const inp = document.getElementById(`ulim_input_${i}`);
-    let val = parseFloat(inp ? inp.value : (CHARACTERISTICS[i].is_quality ? 0.75 : 0.25));
-    if (isNaN(val)) val = CHARACTERISTICS[i].is_quality ? 0.75 : 0.25;
-    limitsArray.push(val);
+    const defLim = CHARACTERISTICS[i].default_limit !== undefined ? CHARACTERISTICS[i].default_limit : (CHARACTERISTICS[i].is_quality ? 0.75 : 0.25);
+    let val = parseFloat(inp ? inp.value : defLim);
+    if (isNaN(val)) val = defLim;
+    rawLimitsArray.push(val);
+    limitsArray.push((isNorm && !CHARACTERISTICS[i].is_quality) ? Math.max(0, 1 - val) : val);
   }
 
-  if (showLimit) {
-    datasets.push({
-      label: "🔴 Нормативный предел (допуск)",
-      data: limitsArray,
-      borderColor: "#dc2626",
-      backgroundColor: "rgba(220, 38, 38, 0.05)",
-      borderWidth: 2.8,
-      borderDash: [6, 4],
-      pointBackgroundColor: "#dc2626",
-      pointBorderColor: "#ffffff",
-      pointBorderWidth: 1.5,
-      pointRadius: 4,
-      pointHoverRadius: 6,
-      order: -1
-    });
+  const limitDataset = {
+    label: isNorm ? "🔴 Нормативный допуск (снаружи — норма)" : "🔴 Нормативный предел (допуск)",
+    data: limitsArray,
+    borderColor: "#dc2626",
+    backgroundColor: "rgba(220, 38, 38, 0.05)",
+    borderWidth: 2.8,
+    borderDash: [6, 4],
+    pointBackgroundColor: "#dc2626",
+    pointBorderColor: "#ffffff",
+    pointBorderWidth: 1.5,
+    pointRadius: 4,
+    pointHoverRadius: 6,
+    order: -1
+  };
+
+  const quarters = currentResults.quarters;
+
+  const bannerEl = document.querySelector(".radar-rules-banner");
+  if (bannerEl) {
+    if (isNorm) {
+      bannerEl.innerHTML = `
+        <div class="rule-item">
+          <span style="color: #dc2626; font-size: 14px;">🔴</span>
+          <span><strong>Нормированный профиль качества (все 28 критериев ориентированы наружу, шаг шкалы 0.25):</strong></span>
+        </div>
+        <div class="rule-item" style="padding-left: 18px;">
+          <span>• <strong>Критерии качества (u₁..u₆)</strong>: фактические значения uᵢ (норма: uᵢ ≥ uᵢ,lim — снаружи или на красной линии).</span>
+        </div>
+        <div class="rule-item" style="padding-left: 18px;">
+          <span>• <strong>Факторы дефектов (u₇..u₂₈)</strong>: инвертированы как (1 - uᵢ) (норма: uᵢ ≤ uᵢ,lim ⇒ 1 - uᵢ ≥ 1 - uᵢ,lim — также снаружи красной линии).</span>
+        </div>
+      `;
+    } else {
+      bannerEl.innerHTML = `
+        <div class="rule-item">
+          <span style="color: #dc2626; font-size: 14px;">🔴</span>
+          <span><strong>Красная линия — нормативный предел (шаг радиальной шкалы 0.25):</strong></span>
+        </div>
+        <div class="rule-item" style="padding-left: 18px;">
+          <span>• <strong>Критерии качества (u₁..u₆)</strong>: фактические значения должны быть <strong>больше либо равны пределу</strong> (снаружи или на красной линии: uᵢ ≥ uᵢ,lim).</span>
+        </div>
+        <div class="rule-item" style="padding-left: 18px;">
+          <span>• <strong>Факторы дефектов (u₇..u₂₈)</strong>: фактические значения должны быть <strong>меньше либо равны пределу</strong> (внутри или на красной линии: uᵢ ≤ uᵢ,lim).</span>
+        </div>
+      `;
+    }
   }
 
-  if (timeChoice === "all") {
+  if (mode === "grid") {
+    // РЕЖИМ СЕТКИ: рендерим сразу 5 диаграмм на странице
+    document.getElementById("radarChartTitle").textContent =
+      `Лепестковые диаграммы качества ПО: Сетка всех 5 временных срезов` + (isNorm ? ` (Нормированный профиль качества)` : ``);
+
     ["t0", "t1", "t2", "t3", "t4"].forEach(key => {
+      const canvas = document.getElementById(`radarChart_${key}`);
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
       const q = qMap[key];
-      const vals = quarters[key].values.slice(0, numVars);
+      const vals = transformValues(quarters[key].values);
+
+      const datasets = [];
+      if (showLimit) {
+        datasets.push(limitDataset);
+      }
       datasets.push({
         label: q.label,
         data: vals,
         borderColor: q.color,
         backgroundColor: q.bg,
-        borderWidth: 1.8,
-        pointRadius: 2
+        borderWidth: 2.4,
+        pointRadius: 3
       });
-    });
-    document.getElementById("radarChartTitle").textContent =
-      `Сводная лепестковая диаграмма: эволюция всех 5 временных срезов`;
-  } else {
-    const q = qMap[timeChoice];
-    const vals = quarters[timeChoice].values.slice(0, numVars);
-    datasets.push({
-      label: q.label,
-      data: vals,
-      borderColor: q.color,
-      backgroundColor: q.bg,
-      borderWidth: 2.4,
-      pointRadius: 3
-    });
-    document.getElementById("radarChartTitle").textContent =
-      `Лепестковая диаграмма состояния системы: ${q.label}`;
-  }
 
-  if (radarChartInstance) {
-    radarChartInstance.destroy();
-  }
+      if (radarGridInstances[key]) {
+        radarGridInstances[key].destroy();
+      }
 
-  radarChartInstance = new Chart(ctx, {
-    type: "radar",
-    data: {
-      labels: labels,
-      datasets: datasets
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        r: {
-          min: 0.0,
-          max: 1.0,
-          ticks: {
-            stepSize: 0.25,
-            font: { size: 10, weight: "bold" },
-            color: "#1e293b",
-            backdropColor: "rgba(255, 255, 255, 0.85)"
+      radarGridInstances[key] = new Chart(ctx, {
+        type: "radar",
+        data: {
+          labels: labels,
+          datasets: datasets
+        },
+        plugins: [radarCrispLabelsPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          layout: {
+            padding: { left: 34, right: 34, top: 12, bottom: 12 }
           },
-          grid: {
-            color: "#cbd5e1"
+          scales: {
+            r: {
+              min: 0.0,
+              max: 1.0,
+              ticks: {
+                stepSize: 0.25,
+                callback: (val) => Number(val).toFixed(2),
+                font: { size: 10.5, weight: "bold" },
+                color: "#1e293b",
+                backdropColor: "rgba(255, 255, 255, 0.85)"
+              },
+              grid: { color: "#cbd5e1" },
+              angleLines: { color: "#e2e8f0" },
+              pointLabels: {
+                color: "rgba(0, 0, 0, 0)",
+                font: { size: isTop6 ? 16 : 14, weight: "700" },
+                padding: 12
+              }
+            }
           },
-          angleLines: {
-            color: "#e2e8f0"
-          },
-          pointLabels: {
-            font: { size: isTop6 ? 11 : 8.5, weight: "600" },
-            color: "#0f172a"
+          plugins: {
+            radarCrispLabels: {
+              enabled: true,
+              items: crispItems,
+              isGrid: true
+            },
+            legend: {
+              position: "top",
+              labels: { boxWidth: 12, font: { size: 10.5, weight: "600" } }
+            },
+            tooltip: {
+              callbacks: {
+                label: (c) => {
+                  const val = c.parsed.r !== undefined ? c.parsed.r.toFixed(3) : c.raw;
+                  return ` ${c.dataset.label}: ${val}`;
+                }
+              }
+            }
           }
         }
+      });
+    });
+
+    updateRadarCompliance("t4", quarters, rawLimitsArray, numVars);
+
+  } else {
+    // РЕЖИМ ОДИНОЧНЫЙ ИЛИ НАЛОЖЕНИЕ
+    const canvas = document.getElementById("radarChart");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    const datasets = [];
+    if (showLimit) {
+      datasets.push(limitDataset);
+    }
+
+    let complianceTime = "t0";
+
+    if (mode === "overlay") {
+      ["t0", "t1", "t2", "t3", "t4"].forEach(key => {
+        const q = qMap[key];
+        const vals = transformValues(quarters[key].values);
+        datasets.push({
+          label: q.label,
+          data: vals,
+          borderColor: q.color,
+          backgroundColor: q.bg,
+          borderWidth: 2.0,
+          pointRadius: 2.5
+        });
+      });
+      document.getElementById("radarChartTitle").textContent =
+        `Сводная лепестковая диаграмма: наложение всех 5 временных срезов` + (isNorm ? ` (Нормированный профиль качества)` : ``);
+      complianceTime = "t4";
+    } else {
+      const timeChoice = document.querySelector("input[name='radarTime']:checked")?.value || "t0";
+      complianceTime = timeChoice;
+      const q = qMap[timeChoice];
+      const vals = transformValues(quarters[timeChoice].values);
+      datasets.push({
+        label: q.label,
+        data: vals,
+        borderColor: q.color,
+        backgroundColor: q.bg,
+        borderWidth: 2.6,
+        pointRadius: 3.5
+      });
+      document.getElementById("radarChartTitle").textContent =
+        `Лепестковая диаграмма состояния системы: ${q.label}` + (isNorm ? ` (Нормированный профиль)` : ``);
+    }
+
+    if (radarChartInstance) {
+      radarChartInstance.destroy();
+    }
+
+    radarChartInstance = new Chart(ctx, {
+      type: "radar",
+      data: {
+        labels: labels,
+        datasets: datasets
       },
-      plugins: {
-        legend: {
-          position: "top",
-          labels: {
-            boxWidth: 14,
-            font: { size: 11 }
+      plugins: [radarCrispLabelsPlugin],
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        layout: {
+          padding: { left: 38, right: 38, top: 14, bottom: 14 }
+        },
+        scales: {
+          r: {
+            min: 0.0,
+            max: 1.0,
+            ticks: {
+              stepSize: 0.25,
+              callback: (val) => Number(val).toFixed(2),
+              font: { size: 11, weight: "bold" },
+              color: "#1e293b",
+              backdropColor: "rgba(255, 255, 255, 0.85)"
+            },
+            grid: { color: "#cbd5e1" },
+            angleLines: { color: "#e2e8f0" },
+            pointLabels: {
+              color: "rgba(0, 0, 0, 0)",
+              font: { size: isTop6 ? 18 : 16, weight: "700" },
+              padding: 16
+            }
           }
         },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => {
-              const val = ctx.parsed.r !== undefined ? ctx.parsed.r.toFixed(3) : ctx.raw;
-              return ` ${ctx.dataset.label}: ${val}`;
+        plugins: {
+          radarCrispLabels: {
+            enabled: true,
+            items: crispItems,
+            isGrid: false
+          },
+          legend: {
+            position: "top",
+            labels: { boxWidth: 14, font: { size: 11 } }
+          },
+          tooltip: {
+            callbacks: {
+              label: (c) => {
+                const val = c.parsed.r !== undefined ? c.parsed.r.toFixed(3) : c.raw;
+                return ` ${c.dataset.label}: ${val}`;
+              }
             }
           }
         }
       }
-    }
-  });
+    });
 
-  updateRadarCompliance(timeChoice, quarters, limitsArray, numVars);
+    updateRadarCompliance(complianceTime, quarters, rawLimitsArray, numVars);
+  }
 }
 
 function updateRadarCompliance(timeChoice, quarters, limitsArray, numVars) {
@@ -1399,11 +2367,11 @@ function updateRadarCompliance(timeChoice, quarters, limitsArray, numVars) {
   let html = `<div style="margin-bottom: 6px;"><strong>Срез:</strong> ${timeLabel}</div>`;
   html += `<div style="display: flex; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">`;
   html += `  <div style="background: #eff6ff; padding: 6px 10px; border-radius: 4px; border: 1px solid #bfdbfe; font-size: 12px;">
-               <strong>Критерии качества:</strong> ${qualityPass} из ${qualityTotal} в норме (≥ u_lim)
+               <strong>Критерии качества:</strong> ${qualityPass} из ${qualityTotal} в норме (≥ uᵢ,lim)
              </div>`;
   if (defectsTotal > 0) {
     html += `  <div style="background: #fef2f2; padding: 6px 10px; border-radius: 4px; border: 1px solid #fecaca; font-size: 12px;">
-                 <strong>Факторы дефектов:</strong> ${defectsPass} из ${defectsTotal} в норме (≤ u_lim)
+                 <strong>Факторы дефектов:</strong> ${defectsPass} из ${defectsTotal} в норме (≤ uᵢ,lim)
                </div>`;
   }
   html += `</div>`;
@@ -1484,12 +2452,20 @@ function initExportHandlers() {
   });
 }
 
-// Экспорт любого графика в PNG прямо из Canvas
+// Экспорт любого графика в PNG прямо из Canvas с белой подложкой для отчетов
 function exportChartPNG(canvasId, defaultFilename) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
-  const imageURI = canvas.toDataURL("image/png");
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = canvas.width;
+  tempCanvas.height = canvas.height;
+  const tempCtx = tempCanvas.getContext("2d");
+  tempCtx.fillStyle = "#ffffff";
+  tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+  tempCtx.drawImage(canvas, 0, 0);
+
+  const imageURI = tempCanvas.toDataURL("image/png");
   const link = document.createElement("a");
   link.setAttribute("href", imageURI);
   link.setAttribute("download", defaultFilename);
